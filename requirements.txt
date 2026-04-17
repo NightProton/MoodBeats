@@ -1,0 +1,7 @@
+streamlit
+tensorflow-cpu
+opencv-python-headless
+numpy
+mediapipe
+pandas
+gdown
