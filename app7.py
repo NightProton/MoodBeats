@@ -59,6 +59,14 @@ if not os.path.exists(MODEL_PATH):
     )
 
 import os, warnings, time, math, random, hashlib
+
+# ── libGL fix for Streamlit Cloud (headless environment) ──────
+# opencv-python requires libGL.so.1 which is absent on Streamlit Cloud.
+# opencv-python-headless does NOT need it. This env var + import guard
+# ensures we always get the headless build.
+import os as _os
+_os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "0")
+
 import cv2
 import numpy as np
 from collections import deque, Counter
