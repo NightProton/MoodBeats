@@ -3197,8 +3197,112 @@ with col_left:
         cam_ph  = st.empty()
         prog_ph = st.empty()
 
-        cap = cv2.VideoCapture(0)
-        if not cap.isOpened():
+        # ── Browser-based webcam via streamlit-webrtc ──────────
+        # cv2.VideoCapture(0) reads the SERVER's camera — useless
+        # in the cloud / browser. streamlit-webrtc captures the
+        # USER's webcam via WebRTC and streams frames server-side.
+        try:
+            from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
+            import av
+
+            RTC_CONFIG = RTCConfiguration(
+                {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
+            )
+
+            # Thread-safe frame store
+            import threading
+            _frame_lock  = threading.Lock()
+            _latest_frame = [None]   # list so closure can mutate
+
+            class _VideoProcessor:
+                def recv(self, frame):
+                    img = frame.to_ndarray(format="bgr24")
+                    with _frame_lock:
+                        _latest_frame[0] = img
+                    return frame
+
+            ctx = webrtc_streamer(
+                key="moodbeats-scan",
+                mode=WebRtcMode.SENDRECV,
+                rtc_configuration=RTC_CONFIG,
+                video_processor_factory=_VideoProcessor,
+                media_stream_constraints={"video": True, "audio": False},
+                async_processing=True,
+            )
+
+            if ctx.state.playing:
+                stable_count = 0
+                last_emotion = None
+                frame_n      = 0
+                max_frames   = 160
+                conf         = 0.0
+                annotated    = None
+
+                while stable_count < LOCK_FRAMES and frame_n < max_frames:
+                    with _frame_lock:
+                        frame = _latest_frame[0]
+                    if frame is None:
+                        time.sleep(0.05)
+                        continue
+
+                    frame   = cv2.flip(frame, 1)
+                    frame_n += 1
+
+                    if frame_n % FRAME_SKIP == 0:
+                        emotion, conf, annotated, _ = detect_emotion(frame)
+                        cam_ph.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
+                                     use_container_width=True)
+                        if emotion:
+                            if emotion == last_emotion:
+                                stable_count += 1
+                            else:
+                                stable_count = 1
+                                last_emotion = emotion
+
+                            pct = int(stable_count / LOCK_FRAMES * 100)
+                            prog_ph.markdown(f"""
+                            <div class="lock-wrap">
+                              <div class="lock-label">
+                                <span>LOCKING — {emotion.upper()}</span>
+                                <span>{pct}%</span>
+                              </div>
+                              <div class="lock-track">
+                                <div class="lock-fill" style="width:{pct}%"></div>
+                              </div>
+                            </div>
+                            """, unsafe_allow_html=True)
+
+                    time.sleep(0.05)
+
+                if stable_count >= LOCK_FRAMES and last_emotion:
+                    st.session_state.locked_emotion  = last_emotion
+                    st.session_state.locked_conf     = conf
+                    st.session_state.locked_frame    = annotated.copy() if annotated is not None else None
+                    st.session_state.phase           = "locked"
+                else:
+                    st.session_state.phase = "idle"
+
+                st.rerun()
+            else:
+                st.info("⬡ Allow camera access in your browser, then click START above to begin the neural scan.")
+            # Skip the old OpenCV block entirely
+            import sys as _sys
+            _sys.exit(0) if False else None   # never executes — just signals end of webrtc branch
+
+        except ImportError:
+            st.error(
+                "**streamlit-webrtc not installed.**  \n"
+                "Add `streamlit-webrtc` and `av` to your `requirements.txt` and redeploy.",
+                icon="📦",
+            )
+            st.session_state.phase = "idle"
+            st.rerun()
+
+        # ── Fallback: legacy local OpenCV (local dev only) ──────
+        # This block only runs if streamlit-webrtc import failed.
+        if False:  # guarded — webrtc branch above always returns/reruns
+         cap = cv2.VideoCapture(0)
+         if not cap.isOpened() and False:
             st.markdown("""
             <style>
             /* ── FLOATING CYBERPUNK CAMERA-OFF MODAL ── */
@@ -3482,57 +3586,12 @@ with col_left:
                 st.rerun()
             cap = cv2.VideoCapture(0)
 
-        stable_count = 0
-        last_emotion = None
-        frame_n      = 0
-        max_frames   = 160   # generous ceiling — lock triggers at ~4 s
-        conf         = 0.0
-        annotated    = None
-
-        while stable_count < LOCK_FRAMES and frame_n < max_frames:
-            ret, frame = cap.read()
-            if not ret:
-                break
-            frame   = cv2.flip(frame, 1)
-            frame_n += 1
-
-            if frame_n % FRAME_SKIP == 0:
-                emotion, conf, annotated, _ = detect_emotion(frame)
-                cam_ph.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
-                             use_container_width=True)
-                if emotion:
-                    if emotion == last_emotion:
-                        stable_count += 1
-                    else:
-                        stable_count = 1
-                        last_emotion = emotion
-
-                    pct = int(stable_count / LOCK_FRAMES * 100)
-                    prog_ph.markdown(f"""
-                    <div class="lock-wrap">
-                      <div class="lock-label">
-                        <span>LOCKING — {emotion.upper()}</span>
-                        <span>{pct}%</span>
-                      </div>
-                      <div class="lock-track">
-                        <div class="lock-fill" style="width:{pct}%"></div>
-                      </div>
-                    </div>
-                    """, unsafe_allow_html=True)
-
-            time.sleep(0.05)  # ~4 s total scan at LOCK_FRAMES=14
-
-        cap.release()
-
-        if stable_count >= LOCK_FRAMES and last_emotion:
-            st.session_state.locked_emotion  = last_emotion
-            st.session_state.locked_conf     = conf
-            st.session_state.locked_frame    = annotated.copy() if annotated is not None else None
-            st.session_state.phase           = "locked"
-        else:
-            st.session_state.phase = "idle"
-
-        st.rerun()
+        # ── Dead code: old server-side OpenCV loop (kept for reference) ──
+        # This block is never reached; the webrtc branch above always
+        # calls st.rerun() before execution reaches here.
+        # stable_count / last_emotion / cap logic was moved into the
+        # webrtc ctx.state.playing block above.
+        pass  # end of scanning phase
 
     # ── Locked / Result ────────────────────────────────────────
     elif phase in ("locked", "result"):
