@@ -1,8 +1,8 @@
 streamlit==1.32.0
 tensorflow-cpu==2.15.0
-opencv-python-headless==4.9.0.76
+opencv-python-headless==4.8.0.76
 numpy==1.26.4
-mediapipe==0.10.14
+mediapipe==0.10.11
 pandas==2.2.1
 gdown==5.2.0
 Pillow==10.3.0
