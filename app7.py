@@ -3129,7 +3129,7 @@ with col_left:
             """, unsafe_allow_html=True)
             col_a, col_b = st.columns([1, 1])
             with col_a:
-                if st.button("&#x2714;  GRANT ACCESS &amp; SCAN", key="btn_consent"):
+                if st.button("&#x2714;  GRANT ACCESS &amp; CAPTURE", key="btn_consent"):
                     st.session_state.camera_consent = True
                     st.session_state.phase = "scanning"
                     st.session_state.emotion_buf.clear()
@@ -3138,21 +3138,19 @@ with col_left:
                 if st.button("&#x2715;  Decline", key="btn_decline"):
                     st.info("Camera access declined. No scan will be performed.")
         else:
-            if st.button("&#x2B21;  INITIATE NEURAL SCAN", key="btn_scan"):
+            if st.button("&#x2B21;  CAPTURE EXPRESSION", key="btn_scan"):
                 st.session_state.phase = "scanning"
                 st.session_state.emotion_buf.clear()
                 st.rerun()
             st.markdown(
                 '<div style="font-family:var(--mono);font-size:.52rem;color:var(--text3);'
                 'letter-spacing:.08em;text-transform:uppercase;margin-top:.4rem;">'
-                '// Shortcut: <span style="color:rgba(0,247,255,.4)">SPACE</span> or '
-                '<span style="color:rgba(0,247,255,.4)">ENTER</span> to scan</div>',
+                '// Takes ~3 seconds · hold your expression · click capture</div>',
                 unsafe_allow_html=True
             )
 
     # ── Scanning ───────────────────────────────────────────────
     elif phase == "scanning":
-        # Reset emotion color bleed back to default cyan
         st.markdown("""
         <style>
         html, body,
@@ -3162,147 +3160,87 @@ with col_left:
           transition: background 2s ease !important;
           background: #0a0a0f !important;
         }
+        /* Style the camera input widget cyberpunk */
+        [data-testid="stCameraInput"] > div {
+          background: rgba(0,247,255,0.04) !important;
+          border: 1px solid rgba(0,247,255,0.25) !important;
+          border-radius: 6px !important;
+        }
+        [data-testid="stCameraInput"] button {
+          font-family: 'Orbitron', monospace !important;
+          background: rgba(0,247,255,0.1) !important;
+          border: 1px solid rgba(0,247,255,0.4) !important;
+          color: #00f7ff !important;
+          letter-spacing: .1em !important;
+          text-transform: uppercase !important;
+          border-radius: 4px !important;
+        }
+        [data-testid="stCameraInput"] button:hover {
+          background: rgba(0,247,255,0.2) !important;
+          box-shadow: 0 0 18px rgba(0,247,255,0.4) !important;
+        }
         </style>
-        <script>
-        (function resetEmotionBleed() {
-          const root = document.documentElement;
-          root.style.setProperty('--cyan',        '#00f7ff');
-          root.style.setProperty('--cyan-dim',    'rgba(0,247,255,0.07)');
-          root.style.setProperty('--cyan-glow',   '0 0 15px rgba(0,247,255,0.45), 0 0 50px rgba(0,247,255,0.15)');
-          root.style.setProperty('--border-neon', 'rgba(0,247,255,0.18)');
-          root.style.setProperty('--text',        '#dde0f0');
-          root.style.setProperty('--text2',       '#606080');
-          const targets = [
-            document.documentElement, document.body,
-            document.querySelector('[data-testid="stAppViewContainer"]'),
-            document.querySelector('[data-testid="stMain"]'),
-            document.querySelector('section.main'),
-          ].filter(Boolean);
-          targets.forEach(el => {
-            el.style.transition = 'background 1.4s ease';
-            el.style.background = '#0a0a0f';
-          });
-          const ov = document.getElementById('emotion-bleed-overlay');
-          if (ov) { ov.style.opacity = '0'; }
-        })();
-        </script>
         """, unsafe_allow_html=True)
+
         st.markdown("""
         <div class="neural-wrap">
           <div class="radar"></div>
-          <div class="neural-status">// Neural scan in progress...</div>
+          <div class="neural-status">// Hold your expression — biometric capture ready</div>
+        </div>
+        <div style="font-family:'Share Tech Mono',monospace;font-size:.58rem;
+             color:#404058;letter-spacing:.1em;text-transform:uppercase;
+             text-align:center;margin-bottom:.8rem;">
+          ▸ Look at the camera · hold your expression · click capture
         </div>
         """, unsafe_allow_html=True)
 
-        cam_ph  = st.empty()
-        prog_ph = st.empty()
+        # ── Native Streamlit camera (works in browser — no WebRTC needed) ──
+        img_file = st.camera_input(
+            label="",
+            key="cam_snap",
+            label_visibility="collapsed",
+        )
 
-        # ── Browser-based webcam via streamlit-webrtc ──────────
-        # cv2.VideoCapture(0) reads the SERVER's camera — useless
-        # in the cloud / browser. streamlit-webrtc captures the
-        # USER's webcam via WebRTC and streams frames server-side.
-        try:
-            from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
-            import av
+        col_cancel, _ = st.columns([1, 3])
+        with col_cancel:
+            if st.button("✕  Cancel", key="btn_cancel_scan"):
+                st.session_state.phase = "idle"
+                st.rerun()
 
-            RTC_CONFIG = RTCConfiguration(
-                {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
-            )
+        if img_file is not None:
+            # Decode the JPEG snapshot into a numpy BGR frame
+            import PIL.Image, io
+            pil_img  = PIL.Image.open(img_file).convert("RGB")
+            frame_np = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
-            # Thread-safe frame store
-            import threading
-            _frame_lock  = threading.Lock()
-            _latest_frame = [None]   # list so closure can mutate
+            # Clear buffer so we get a fresh read for this photo
+            st.session_state.emotion_buf.clear()
 
-            class _VideoProcessor:
-                def recv(self, frame):
-                    img = frame.to_ndarray(format="bgr24")
-                    with _frame_lock:
-                        _latest_frame[0] = img
-                    return frame
+            # Run detection on the single captured frame
+            # (run it 5 times so the smoothing buffer fills with consistent votes)
+            emotion, conf, annotated, _ = detect_emotion(frame_np)
+            for _ in range(SMOOTHING_WINDOW - 1):
+                detect_emotion(frame_np)   # just to fill the buffer
 
-            ctx = webrtc_streamer(
-                key="moodbeats-scan",
-                mode=WebRtcMode.SENDRECV,
-                rtc_configuration=RTC_CONFIG,
-                video_processor_factory=_VideoProcessor,
-                media_stream_constraints={"video": True, "audio": False},
-                async_processing=True,
-            )
-
-            if ctx.state.playing:
-                stable_count = 0
-                last_emotion = None
-                frame_n      = 0
-                max_frames   = 160
-                conf         = 0.0
-                annotated    = None
-
-                while stable_count < LOCK_FRAMES and frame_n < max_frames:
-                    with _frame_lock:
-                        frame = _latest_frame[0]
-                    if frame is None:
-                        time.sleep(0.05)
-                        continue
-
-                    frame   = cv2.flip(frame, 1)
-                    frame_n += 1
-
-                    if frame_n % FRAME_SKIP == 0:
-                        emotion, conf, annotated, _ = detect_emotion(frame)
-                        cam_ph.image(cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB),
-                                     use_container_width=True)
-                        if emotion:
-                            if emotion == last_emotion:
-                                stable_count += 1
-                            else:
-                                stable_count = 1
-                                last_emotion = emotion
-
-                            pct = int(stable_count / LOCK_FRAMES * 100)
-                            prog_ph.markdown(f"""
-                            <div class="lock-wrap">
-                              <div class="lock-label">
-                                <span>LOCKING — {emotion.upper()}</span>
-                                <span>{pct}%</span>
-                              </div>
-                              <div class="lock-track">
-                                <div class="lock-fill" style="width:{pct}%"></div>
-                              </div>
-                            </div>
-                            """, unsafe_allow_html=True)
-
-                    time.sleep(0.05)
-
-                if stable_count >= LOCK_FRAMES and last_emotion:
-                    st.session_state.locked_emotion  = last_emotion
-                    st.session_state.locked_conf     = conf
-                    st.session_state.locked_frame    = annotated.copy() if annotated is not None else None
-                    st.session_state.phase           = "locked"
-                else:
-                    st.session_state.phase = "idle"
-
+            if emotion:
+                st.session_state.locked_emotion = emotion
+                st.session_state.locked_conf    = conf
+                st.session_state.locked_frame   = annotated.copy() if annotated is not None else None
+                st.session_state.phase          = "locked"
                 st.rerun()
             else:
-                st.info("⬡ Allow camera access in your browser, then click START above to begin the neural scan.")
-            # Skip the old OpenCV block entirely
-            import sys as _sys
-            _sys.exit(0) if False else None   # never executes — just signals end of webrtc branch
+                st.markdown("""
+                <div style="background:rgba(255,0,51,0.08);border:1px solid rgba(255,0,51,0.35);
+                     border-radius:6px;padding:.8rem 1rem;margin-top:.8rem;
+                     font-family:'Share Tech Mono',monospace;font-size:.65rem;
+                     color:#ff6060;letter-spacing:.08em;text-align:center;">
+                  ⚠ No face detected — ensure your face is well-lit and centred, then retake.
+                </div>
+                """, unsafe_allow_html=True)
 
-        except ImportError:
-            st.error(
-                "**streamlit-webrtc not installed.**  \n"
-                "Add `streamlit-webrtc` and `av` to your `requirements.txt` and redeploy.",
-                icon="📦",
-            )
-            st.session_state.phase = "idle"
-            st.rerun()
-
-        # ── Fallback: legacy local OpenCV (local dev only) ──────
-        # This block only runs if streamlit-webrtc import failed.
-        if False:  # guarded — webrtc branch above always returns/reruns
-         cap = cv2.VideoCapture(0)
-         if not cap.isOpened() and False:
+        if False:  # dead code block — kept to preserve indentation for legacy modal below
+         cap = None
+         if False and cap is not None:
             st.markdown("""
             <style>
             /* ── FLOATING CYBERPUNK CAMERA-OFF MODAL ── */
