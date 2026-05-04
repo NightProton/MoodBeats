@@ -7,13 +7,7 @@ pandas==2.2.1
 gdown==5.2.0
 Pillow==10.3.0
 requests==2.31.0
- 
-# WebRTC camera stack — these three must stay in sync:
-# streamlit-webrtc 0.47.9 is the last version that works with av 9.x–10.x
-# av 10.0.0 is stable and compatible with aiortc 1.6.x
-# aiortc is the WebRTC engine underneath streamlit-webrtc
 streamlit-webrtc==0.47.9
-av==10.0.0
-aiortc==1.6.0
- 
+av==12.3.0
+aiortc==1.9.0
 openai>=1.0.0
